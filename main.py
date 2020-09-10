@@ -20,26 +20,22 @@ args = parser.parse_args()
 # print(f"{args.coordinates}, {args.report}, {new_report}")
 
 # set an output file name
-new_report = os.path.splitext(args.report)[0] + " Updated" if args.output == None else args.output
-territory_finder = TerritoryFinder(args.coordinates, args.report, new_report)
+new_report = os.path.splitext(args.report)[0] + " Updated.xlsx" if args.output == None else args.output
+tf = TerritoryFinder(args.coordinates, args.report, new_report)
 
-total_steps = 9
+total_steps = 5
 
-territory_finder.log.info(f"Step 1 of {total_steps}: Loading and prepare data")
-territory_finder.load_data()
+tf.log.info(f"Step 1 of {total_steps}: Loading and prepare data")
+tf.load_data()
 
-territory_finder.log.info(f"Step 2 of {total_steps}: Validate the model")
-territory_finder.validate()
+tf.log.info(f"Step 2 of {total_steps}: Validate the model")
+tf.validate()
 
-territory_finder.log.info(f"Step 3 of {total_steps}: Train the model")
-territory_finder.fit()
+tf.log.info(f"Step 3 of {total_steps}: Train the model")
+tf.fit()
 
-territory_finder.log.info(f"Step 4 of {total_steps}: Prepare report")
-# territory_finder.get_report()
+tf.log.info(f"Step 4 of {total_steps}: Prepare report")
+tf.get_report()
 
-territory_finder.log.info(f"Step 5 of {total_steps}: Save report")
-# territory_finder.save_report()
-
-# print('Step 7 of 9: Define top 3 classes')
-
-# print("last line")
+tf.log.info(f"Step 5 of {total_steps}: Save report")
+tf.save_report()

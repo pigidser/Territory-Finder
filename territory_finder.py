@@ -1,5 +1,4 @@
-from utilities import *
-
+import logging
 import os, sys
 from time import time
 import numpy as np
@@ -12,24 +11,41 @@ from sklearn.metrics import balanced_accuracy_score
 from sklearn.ensemble import RandomForestClassifier
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill
-
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment, PatternFill
 
 class TerritoryFinder(object):
 
-    def __init__(self, coord_file, report_file, output_file):
+    def __init__(self, coord_file, report_file, output_file, samples_threshold=2):
         """ Class initialization, logging set-up, checking input files """
         # input and output files
         self.coord_file, self.report_file, self.output_file = coord_file, report_file, output_file
         # Выборка не сбалансированная, используем class_weight='balanced', n_estimators=40
         self.model = RandomForestClassifier(class_weight='balanced', n_estimators=40, random_state=42, n_jobs=-1, warm_start=False)
         self.df = pd.DataFrame()
-        self.__X_enc_train, self.__y_enc_train, self.__X_enc_pred = None, None, None
-        self.log = set_up_logging()
-        self.__check_env()
+        self.X_enc_train, self.y_enc_train, self.X_enc_pred = None, None, None
+        self.set_up_logging()
+        self.check_env()
+        # Порог для исключения классов
+        self.samples_threshold = samples_threshold
         self.log.debug("TerritoryFinder class initialized")
+
+    def set_up_logging(self):
+        """ Set up logging """
+        os.makedirs('logs', exist_ok=True)
+        self.log = logging.getLogger(__name__)
+        self.log.setLevel(logging.DEBUG)
+        formatter = logging.Formatter(fmt="%(asctime)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d - %H:%M:%S")
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setLevel(logging.DEBUG)
+        sh.setFormatter(formatter)
+        fh = logging.FileHandler(u"./logs/territory_finder.log", "w")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        self.log.addHandler(sh)
+        self.log.addHandler(fh)
     
-    def __check_env(self):
+    def check_env(self):
         if not os.path.isfile(self.coord_file):
             self.log.error(f"File '{self.coord_file}' not found. Please place it in a folder with this program")
             raise Exception
@@ -38,7 +54,7 @@ class TerritoryFinder(object):
             raise Exception
         self.log.debug(f"Input files were found")
 
-    def __restore_coordinates(self):
+    def restore_coordinates(self):
         """ Find coordinates for an outlet by its neighbors """
 
         self.df['Latitude'].replace(0, np.NaN, inplace=True)
@@ -113,7 +129,7 @@ class TerritoryFinder(object):
             raise Exception
 
         self.log.info(f"Loading report file...")
-        df_terr = pd.read_excel(self.report_file, skiprows=1, nrows=1000)
+        df_terr = pd.read_excel(self.report_file, skiprows=1)
         self.log.debug(f"Rows in {self.report_file}: {df_terr.shape[0]}")
         # rename fields
         df_terr.columns = ['Region','Distrib','Office','FFDSL','TSE_MTDE',
@@ -137,7 +153,7 @@ class TerritoryFinder(object):
             'Change_Period','Region_Last_Future_Ship_to',
             'Last_Future_ship_to_Name', 'Last_Future_ship_to', 'Comment']
 
-        df_codes = pd.DataFrame(data=df_terr['SWE_Store_Key'],columns=['SWE_Store_Key'])
+        self.df_codes = pd.DataFrame(data=df_terr['SWE_Store_Key'],columns=['SWE_Store_Key'])
 
         # do not take unused columns
         df_terr = df_terr[['SWE_Store_Key','Region','Distrib','Office','FFDSL','TSE_MTDE','Level_Torg_Region1',
@@ -157,19 +173,48 @@ class TerritoryFinder(object):
         del df_coor
 
         self.log.info("Restore coordinates...")
-        self.__restore_coordinates()
+        self.restore_coordinates()
 
         self.df['isTrain'] = ~ self.df['Last_Future_ship_to'].isna()
 
         # Last_Future_ship_to убрать внешние пробелы и преобразовать к типу str
         # self.df['Last_Future_ship_to'] = self.df['Last_Future_ship_to'].astype(str)
         self.df.loc[self.df['isTrain']==True,'Last_Future_ship_to'] = \
-            self.df.loc[self.df['isTrain']==True]['Last_Future_ship_to'].apply(align_value)
+            self.df.loc[self.df['isTrain']==True]['Last_Future_ship_to'].apply(self.align_value)
 
         self.df['From_Dc'] = self.df['From_Dc'].astype(int)
         self.df['Chain_Id'] = self.df['Chain_Id'].astype(str)
         # Установить поле как индекс, тем самым исключив его из списка признаков
         self.df.set_index('SWE_Store_Key',inplace=True)
+        # Классы для исключения
+        self.ships_to_exclude = self.get_ships_to_exclude(self.samples_threshold)
+
+    def align_value(self, value):
+        """
+        Избавиться от крайних символов и дублирующихся запятых.
+        Если получен список, то отсортировать по возрастанию
+
+        """
+        try:
+            aligned = value
+            # Избавится от крайних символов и дублирующихся запятых
+            try:
+                aligned = str(int(float(aligned)))
+            except ValueError:
+                aligned = aligned.strip().replace(', ,',',').replace(',  ,',',') \
+                    .replace(',,',',').replace(',,',',').replace(',,',',')
+                while aligned[0] not in ['0','1','2','3','4','5','6','7','8','9']:
+                    aligned = aligned[1:]
+                while aligned[-1] not in ['0','1','2','3','4','5','6','7','8','9']:
+                    aligned = aligned[:-1]
+                aligned = np.array(aligned.split(',')).astype('float').astype('int')
+#                 aligned = np.sort(aligned)
+                aligned = ','.join(aligned.astype(str))
+        except Exception as e:
+            print(f"Возникла проблема при обработке кода {value}. Ошибка {e}")
+            return value
+        finally:
+            return aligned
 
     def get_ships_to_exclude(self, threshold=2):
         """
@@ -187,7 +232,7 @@ class TerritoryFinder(object):
         
         return [str(item) for item in list(ship_counts['Last_Future_ship_to'][ship_counts['Counts']<threshold].values)]
 
-    def __get_encoded(self):
+    def get_encoded(self):
         """ Ordinal encoding implementation """
 
         # fill NaN values, not touching target variable
@@ -204,43 +249,40 @@ class TerritoryFinder(object):
         aux_target = ['Region_Last_Future_Ship_to','Last_Future_ship_to_Name']
         service = ['isTrain','isCoord']  # Сервисные признаки, которые отбросить
         # Из полного списка признаков или из переданного списка признаков исключить target, aux_target & service
-        features = [column for column in self.df.columns \
+        self.features = [column for column in self.df.columns \
                     if column not in target + aux_target + service]
-        # Классы для исключения
-        samples_threshold = 2
-        ships_to_exclude = self.get_ships_to_exclude(samples_threshold)
-
+        
         # Обучить кодировщик на полном наборе признаков
-        X = self.df[(~self.df['Last_Future_ship_to'].isin(ships_to_exclude))][features]
+        X = self.df[(~self.df['Last_Future_ship_to'].isin(self.ships_to_exclude))][self.features]
         cat_features = X.select_dtypes(include=['object']).columns  # Categorical
         num_features = X.select_dtypes(exclude=['object']).columns  # Numeric
-        self.__encoder_x = OrdinalEncoder()
-        self.__encoder_x.fit(X[cat_features])
+        self.encoder_x = OrdinalEncoder()
+        self.encoder_x.fit(X[cat_features])
 
-        X_train = self.df[(self.df['isTrain']==True)&(~self.df['Last_Future_ship_to'].isin(ships_to_exclude))][features]
-        X_cat = self.__encoder_x.transform(X_train[cat_features])       # Transform cats features
+        X_train = self.df[(self.df['isTrain']==True)&(~self.df['Last_Future_ship_to'].isin(self.ships_to_exclude))][self.features]
+        X_cat = self.encoder_x.transform(X_train[cat_features])       # Transform cats features
         X_num = X_train[num_features]                                   # Not transform nums features
-        self.__X_enc_train = np.hstack([X_cat, X_num])                  # Join
+        self.X_enc_train = np.hstack([X_cat, X_num])                  # Join
 
-        X_pred = self.df[(self.df['isTrain']==False)&(~self.df['Last_Future_ship_to'].isin(ships_to_exclude))][features]
-        X_cat = self.__encoder_x.transform(X_pred[cat_features])
+        X_pred = self.df[(self.df['isTrain']==False)&(~self.df['Last_Future_ship_to'].isin(self.ships_to_exclude))][self.features]
+        X_cat = self.encoder_x.transform(X_pred[cat_features])
         X_num = X_pred[num_features]
-        self.__X_enc_pred = np.hstack([X_cat, X_num])
-        self.log.debug(f"Shapes: X {X.shape}, X_enc_train {self.__X_enc_train.shape}, X_enc_pred {self.__X_enc_pred.shape}")
+        self.X_enc_pred = np.hstack([X_cat, X_num])
+        self.log.debug(f"Shapes: X {X.shape}, X_enc_train {self.X_enc_train.shape}, X_enc_pred {self.X_enc_pred.shape}")
         
         # Transform y
-        y = self.df[(self.df['isTrain']==True)&(~self.df['Last_Future_ship_to'].isin(ships_to_exclude))][target]
-        self.__encoder_y = LabelEncoder()
+        y = self.df[(self.df['isTrain']==True)&(~self.df['Last_Future_ship_to'].isin(self.ships_to_exclude))][target]
+        self.encoder_y = LabelEncoder()
         # y is a DataFrame, converting to 1D array
-        self.__y_enc_train = self.__encoder_y.fit_transform(y.values.ravel())
-        self.log.debug(f"Shape: y_enc_train {self.__y_enc_train.shape}")
+        self.y_enc_train = self.encoder_y.fit_transform(y.values.ravel())
+        self.log.debug(f"Shape: y_enc_train {self.y_enc_train.shape}")
         
     def validate(self):
-        """ Split the dataset into the training and the validation parts to training and validation """
-        self.__get_encoded()
+        """ Split the dataset into the training and the validation parts for training and validation """
+        self.get_encoded()
         # Training-Validation split
-        X_train, X_valid, y_train, y_valid = train_test_split(self.__X_enc_train, self.__y_enc_train,
-            test_size=0.3, random_state=42, stratify=self.__y_enc_train)
+        X_train, X_valid, y_train, y_valid = train_test_split(self.X_enc_train, self.y_enc_train,
+            test_size=0.3, random_state=42, stratify=self.y_enc_train)
         # Training, validation, Cross-Validation
         t0 = time()
         self.model.fit(X_train, y_train)
@@ -251,26 +293,77 @@ class TerritoryFinder(object):
         self.log.info(f"Balanced accuracy score: {self.val_score:.3f}")
         self.log.debug(f"Validation finished in {time() - t0:.1f} sec.")
         t0 = time()
-        val_cv_score = cross_val_score(self.model, self.__X_enc_train, self.__y_enc_train, cv=3, scoring='balanced_accuracy')
+        val_cv_score = cross_val_score(self.model, self.X_enc_train, self.y_enc_train, cv=3, scoring='balanced_accuracy')
         self.val_cv_score = np.array([round(item, 5) for item in val_cv_score])
         self.log.info(f"Cross-validation average score: {self.val_cv_score.mean():.3f}")
         self.log.debug(f"Cross-validation finished in {time() - t0:.3f} sec.")
         # print statistics
-        self.__get_statistics(X_valid)
+        self.get_statistics(X_valid, y_valid)
 
-    def __get_statistics(self, X_valid):
+    def get_statistics(self, X_valid, y_valid):
         """ Print statistics """
-        self.__find_top_3(X_valid)
-        # # y_valid закодирован, поэтому инвертируем как было
-        # self.proba['y_valid'] = self.__encoder_y.inverse_transform(y_valid)
-        # self.proba['correct_1'] = self.proba.apply(lambda x: int(x.top_1_class==x.y_valid),axis=1)
-        # self.proba['correct_2'] = self.proba.apply(lambda x: int(x.top_2_class==x.y_valid),axis=1)
-        # self.proba['correct_3'] = self.proba.apply(lambda x: int(x.top_3_class==x.y_valid),axis=1)
+        self.find_top_3(X_valid)
+        # y_valid закодирован, поэтому инвертируем как было
+        self.proba['y_valid'] = self.encoder_y.inverse_transform(y_valid)
+        self.proba['correct_1'] = self.proba.apply(lambda x: int(x.top_1_class==x.y_valid),axis=1)
+        self.proba['correct_2'] = self.proba.apply(lambda x: int(x.top_2_class==x.y_valid),axis=1)
+        self.proba['correct_3'] = self.proba.apply(lambda x: int(x.top_3_class==x.y_valid),axis=1)
 
-        # # Оставим только новые столбцы с информацией по 3-м классам с наивысшей уверенностью
-        # self.proba = self.proba.loc[:,'top_1_class':]
+        # Оставим только новые столбцы с информацией по 3-м классам с наивысшей уверенностью
+        self.proba = self.proba.loc[:,'top_1_class':]
 
-    def __find_top_3(self, X_valid):
+        # Всего предсказаний
+        total = self.proba.shape[0]
+        # Количество верных предсказаний по классам 
+        corr_cl1 = self.proba[self.proba.top_1_class==self.proba.y_valid].shape[0]
+        corr_cl2 = self.proba[self.proba.top_2_class==self.proba.y_valid].shape[0]
+        corr_cl3 = self.proba[self.proba.top_3_class==self.proba.y_valid].shape[0]
+        not_correct = total - (corr_cl1 + corr_cl2 + corr_cl3)
+        self.log.info(f"""
+        Всего предсказаний: {total}
+        Правильных предсказаний: {corr_cl1/total*100:.1f}% ({corr_cl1})
+        Предсказанных во втором варианте: {corr_cl2/total*100:.2f}% ({corr_cl2})
+        Предсказанных в третьем варианте: {corr_cl3/total*100:.3f}% ({corr_cl3})
+        Не предсказанных вообще {not_correct/total*100:.3f}% ({not_correct})
+        """)
+
+        def get_proba_info(class_num, proba_from, proba_to):
+            """
+            Получает название класса и возвращает количество правильных, не правильных ответов, а также интервал
+            
+            """
+            correct_num = self.proba[(self.proba[class_num+'_class']==self.proba.y_valid)& \
+                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
+            incorrect_num = self.proba[(self.proba[class_num+'_class']!=self.proba.y_valid)& \
+                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
+            return correct_num, incorrect_num, (proba_from, proba_to)
+
+        correct, incorrect, index = [], [], []
+        for edge in range(20,100,10):
+            cor, inc, ind = get_proba_info('top_1',edge/100,(edge+10)/100)
+            correct.append(cor)
+            incorrect.append(inc)
+            index.append(ind)
+            
+        a = pd.DataFrame(data={'correct':correct[::-1], 'incorrect':incorrect[::-1]}, index=index[::-1])    
+
+        # Напечатать интервальную серию с выводом информации об отношении количеств элементов в интервалах 
+        top = 1
+        bottom = 0
+        rep_list = []
+        rep_list.append(f"\n{'Интервал':>12} {'Верных':>8} {'Неверных':>10} {'Нев./Общ.':>11}\n")
+        for i in range(len(a)):
+            mid = a.index[i][0]
+            s = f"{str(a.index[i]):>12} {a.correct[i]:>8} {a.incorrect[i]:>10}"
+            if i==0:
+                v = a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100
+            else:
+                v = a.incorrect[:i+1].sum() / (a.incorrect[:i+1].sum() + a.correct[:i+1].sum()) * 100
+            rep_list.append("{0} {1:>10.2f} | интервал ({2}, {3}] кол. ошибок / общему кол. предсказаний = {4:.2f}%\n" \
+                    .format(s, a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100, mid, top, v))
+        self.log.info(''.join(rep_list))
+
+    def find_top_3(self, X_valid):
         """ Define top 3 classes for each outlet without an answer """
         y_pred_proba = self.model.predict_proba(X_valid)
         self.proba = pd.DataFrame(data=y_pred_proba, columns=self.model.classes_)
@@ -292,56 +385,83 @@ class TerritoryFinder(object):
             self.proba['top_2_class'], self.proba['top_2_proba'], \
             self.proba['top_3_class'], self.proba['top_3_proba'] = zip(*self.proba.apply(get_max_3_classes, axis=1))
 
+        self.proba['top_1_class'] = self.encoder_y.inverse_transform(self.proba['top_1_class'].values.ravel())
+        self.proba['top_2_class'] = self.encoder_y.inverse_transform(self.proba['top_2_class'].values.ravel())
+        self.proba['top_3_class'] = self.encoder_y.inverse_transform(self.proba['top_3_class'].values.ravel())
+        
     def fit(self):
         """ Training on full data set """
         self.log.info("Final training...")
-        self.__get_encoded()
+        self.get_encoded()
         t0 = time()
-        self.model.fit(self.__X_enc_train, self.__y_enc_train)
+        self.model.fit(self.X_enc_train, self.y_enc_train)
         self.log.debug(f"Final training finished in {time() - t0:.3f} sec.")
 
     def get_report(self):
         """ Prepare a new report """
+
+        self.log.info("Calculate proba...")
         t0 = time()
-        self.log.info("Preparing report...")
-        self.__find_top_3(self.__X_enc_pred)
+        # Generate proba
+        self.find_top_3(self.X_enc_pred)
+        X_pred = self.df[(self.df['isTrain']==False)& \
+                         (~self.df['Last_Future_ship_to'] \
+                          .isin(self.ships_to_exclude))][self.features]
+        X_pred.reset_index(inplace=True)
+        df_concat = pd.concat([X_pred['SWE_Store_Key'], self.proba.loc[:,'top_1_class':]], axis=1,join='inner')
+        df_info = self.df_codes.merge(right=df_concat,how='left',on='SWE_Store_Key')
+        df_info['SWE_Store_Key'] = df_info['SWE_Store_Key'].astype('str')
+        self.log.debug(f"Done in {time() - t0:.3f} sec.")
 
-        # X_pred.reset_index(inplace=True)
-        # df_concat = pd.concat([X_pred['SWE_Store_Key'], df_proba.loc[:,'top_1_class':]], axis=1,join='inner')
-
-        # df_info = df_codes.merge(right=df_concat,how='left',on='SWE_Store_Key')
-
-        # del df_codes
-        # del df_concat
-
-        # self.workbook = openpyxl.load_workbook(report_file)
-        # worksheet = self.workbook['Sheet1']
-
-        # rows = dataframe_to_rows(df_info, index=False, header=True)
-
-        # start_row = 2
-        # start_col = 46
-        # for r_idx, row in enumerate(rows, start_row):
-        #     for c_idx, value in enumerate(row, start_col):
-        #         worksheet.cell(row=r_idx, column=c_idx, value=value)
-        #     if type(row[2])==float and not pd.isnull(row[2]):
-        #         proba = float(row[2])
-        #         if proba >= 0.9:
-        #             worksheet.cell(row=r_idx, column=39, value=row[1])
-        #             worksheet.cell(row=r_idx, column=39).fill = PatternFill("solid", fgColor="00D328")
-        #         elif proba >= 0.8:
-        #             worksheet.cell(row=r_idx, column=39, value=row[1])
-        #             worksheet.cell(row=r_idx, column=39).fill = PatternFill("solid", fgColor="F9F405")
-        #         else:
-        #             worksheet.cell(row=r_idx, column=39, value=row[1])
-        #             worksheet.cell(row=r_idx, column=39).fill = PatternFill("solid", fgColor="FCB09F")
-
-        self.log.debug(f"Report prepared in {time() - t0:.3f} sec.")
-
+        self.log.info("Open report...")
+        t0 = time()
+        self.workbook = openpyxl.load_workbook(self.report_file)
+        self.log.debug(f"Done in {time() - t0:.3f} sec.")
+        
+        self.log.info("Format report...")
+        t0 = time()
+        worksheet = self.workbook['Sheet1']
+        rows = dataframe_to_rows(df_info, index=False, header=True)
+        proba_row = 2
+        proba_col = 54    # BB column
+        target_col = 51   # AY column
+        region_col = 49
+        name_col = 49
+        # Setup column width, setup title text, font and alignment
+        widths = [19,11,5,11,5,11,5]
+        captions = ['SWE Store Key','1 class',' 1 proba','2 class','2 proba','3 class','3 proba']
+        for i in range(7):
+            worksheet.column_dimensions[get_column_letter(proba_col + i)].width = widths[i]
+            cell = get_column_letter(proba_col + i) + str(proba_row)
+            worksheet[cell] = captions[i]
+            worksheet[cell].font = Font(name='Times New Roman', size=12, bold=True)
+            worksheet[cell].alignment = Alignment(horizontal='left', vertical='top')
+            worksheet[cell].fill = PatternFill("solid", fgColor="00CCFFCC")
+        # Go through all rows
+        for r_idx, row in enumerate(rows, proba_row):
+            # If proba is defined or the very first row with a title
+            if type(row[2])==float and not pd.isnull(row[2]):
+                # Go through columns in a row
+                for c_idx, value in enumerate(row, proba_col):
+                    worksheet.cell(row=r_idx, column=c_idx, value=value)
+                    worksheet.cell(row=r_idx, column=c_idx).font = Font(name='Arial', size=10, bold=False)
+                    worksheet.cell(row=r_idx, column=c_idx).alignment = Alignment(horizontal='left', vertical='top')
+                if r_idx > 2:
+                    proba = float(row[2])
+                    if proba >= 0.9:
+                        worksheet.cell(row=r_idx, column=target_col, value=row[1])
+                        worksheet.cell(row=r_idx, column=target_col).fill = PatternFill("solid", fgColor="00CCFFCC")
+                    elif proba >= 0.7:
+                        worksheet.cell(row=r_idx, column=target_col, value=row[1])
+                        worksheet.cell(row=r_idx, column=target_col).fill = PatternFill("solid", fgColor="00FFCC99")
+                    else:
+                        worksheet.cell(row=r_idx, column=target_col, value=row[1])
+                        worksheet.cell(row=r_idx, column=target_col).fill = PatternFill("solid", fgColor="00FF9900")
+        self.log.debug(f"Done in {time() - t0:.3f} sec.")
 
     def save_report(self):
-        self.log.info("Saving output file...")
+        self.log.info("Save output file...")
         t0 = time()
         self.workbook.save(self.output_file)
         self.log.debug(f"Saved in {time() - t0:.3f} sec.")
-        self.info(f"The new report saved as {output_file}")
+        self.log.info(f"New report saved as '{self.output_file}''")

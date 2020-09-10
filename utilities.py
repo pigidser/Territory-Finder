@@ -24,10 +24,10 @@ def set_up_logging():
 
 def align_value(value):
     """
-    Избавится от крайних символов и дублирующихся запятых.
+    Избавиться от крайних символов и дублирующихся запятых.
     Если получен список, то отсортировать по возрастанию
 
-"""
+    """
     try:
         aligned = value
         # Избавится от крайних символов и дублирующихся запятых
@@ -49,26 +49,3 @@ def align_value(value):
     finally:
         return aligned
             
-# def align_ship_to(value):
-#     """Избавится от крайних символов и дублирующихся запятых
-    
-#     """
-#     try:
-#         # Избавится от крайних символов и дублирующихся запятых
-#         aligned, value = str(value), str(value)
-#         value = value.replace(',,',',').replace(',,',',').replace(',,',',') \
-#             .replace(', ,',',').replace(',  ,',',').strip()
-#         # remove non-digit symbols from left
-#         while value[0] not in ['0','1','2','3','4','5','6','7','8','9']:
-#             value = value[1:]
-#         # remove non-digit symbols from right
-#         while value[-1] not in ['0','1','2','3','4','5','6','7','8','9']:
-#             value = value[:-1]
-#         aligned = np.array(value.split(',')).astype('int')
-#         aligned = np.sort(aligned)
-#         aligned = ','.join(aligned.astype(str))
-#     except Exception as e:
-#         print(f"Возникла проблема при обработке кода {value}. Ошибка {e}")
-#         return value
-#     finally:
-#         return aligned
