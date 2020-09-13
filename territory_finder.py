@@ -115,7 +115,7 @@ class TerritoryFinder(object):
     def load_data(self):          
         """ Load and transform data """
         self.logger.info(f"Loading coordinates...")
-        df_coor = pd.read_excel(self.coord_file, nrows=1000)
+        df_coor = pd.read_excel(self.coord_file)
         self.logger.debug(f"Rows in {self.coord_file}: {df_coor.shape[0]}")
         df_coor.columns = ['SWE_Store_Key','Latitude','Longitude']
         # cleansing of invalid coordinates
