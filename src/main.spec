@@ -3,14 +3,14 @@
 block_cipher = None
 
 
-a = Analysis(['src\\main.py'],
+a = Analysis(['main.py'],
              pathex=['Z:\\src'],
              binaries=[],
-             datas=[],
-             hiddenimports=[],
+             datas=[('vcruntime140.dll', '.'), ('vcomp140.dll', '.')],
+             hiddenimports=['sklearn.neighbors._typedefs', 'sklearn.neighbors._dist_metrics', 'sklearn.neighbors._ball_tree', 'sklearn.utils._cython_blas', 'sklearn.neighbors._quad_tree', 'sklearn.tree._utils'],
              hookspath=[],
              runtime_hooks=[],
-             excludes=[],
+             excludes=['PyQt5'],
              win_no_prefer_redirects=False,
              win_private_assemblies=False,
              cipher=block_cipher,
@@ -35,3 +35,4 @@ coll = COLLECT(exe,
                upx=True,
                upx_exclude=[],
                name='main')
+

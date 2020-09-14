@@ -3,3 +3,4 @@ scipy==1.4.1
 pandas==0.25.3
 openpyxl==3.0.5
 scikit-learn==0.22.1
+xlrd==1.2.0
