@@ -23,7 +23,7 @@ class TerritoryFinder(object):
         # input and output files
         self.coord_file, self.report_file, self.output_file = coord_file, report_file, output_file
         # Unbalanced dataset. Use class_weight='balanced'
-        self.model = RandomForestClassifier(class_weight='balanced', n_estimators=40, random_state=42, n_jobs=-1, warm_start=False)
+        self.model = RandomForestClassifier(class_weight='balanced', n_estimators=40, random_state=42, n_jobs=None, warm_start=False)
         # self.df = pd.DataFrame()
         # self.X_enc_train, self.y_enc_train, self.X_enc_pred = None, None, None
         self.check_env()
