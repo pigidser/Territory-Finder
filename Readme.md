@@ -5,11 +5,11 @@ This project uses https://github.com/cdrx/docker-pyinstaller.git repository that
 ### How to compile the project:
 1. Put modified python scripts in /src folder (main.py, territory_finder.py, etc.)
 2. Go to the /src folder
-$ cd src
+> cd src
 3. Build executables
-Linux
-$ docker run -v "$(pwd):/src/" cdrx/pyinstaller-windows
-Windows (be sure /src folder is shared - Docker Settings > Resources > File Sharing)
-> docker run -v "%cd%:/src/" cdrx/pyinstaller-windows 
+    1. Linux
+    > docker run -v "$(pwd):/src/" cdrx/pyinstaller-windows
+    2. Windows (be sure /src folder is shared - Docker Settings > Resources > File Sharing)
+    > docker run -v "%cd%:/src/" cdrx/pyinstaller-windows
 
 It will build your PyInstaller project into dist/windows/
