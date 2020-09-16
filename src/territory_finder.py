@@ -97,21 +97,30 @@ class TerritoryFinder(object):
         kladr_lon_grouped = self.df[self.df['isCoord']==1].groupby(['Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4']).Longitude.mean()
         # Restore Latitude
         t0 = time()
-        self.df.loc[self.df['isCoord']==0,'Latitude'] = \
-            self.df.loc[self.df['isCoord']==0][['SWE_Store_Key','Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4']].apply( \
-                self.get_avg_coordinate, args=(kladr_lat_grouped,), axis=1)
-        self.logger.debug(f"Latitude restoring finished in {time() - t0:.3f} sec. " \
-                                f"(not found {self.df[self.df['Latitude']==0].shape[0]})")
+        try:
+            self.df.loc[self.df['isCoord']==0,'Latitude'] = \
+                self.df.loc[self.df['isCoord']==0][['SWE_Store_Key','Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4']].apply( \
+                    self.get_avg_coordinate, args=(kladr_lat_grouped,), axis=1)
+        except Exception as err:
+            self.logger.exception(err)
+        finally:
+            self.logger.debug(f"Latitude restoring finished in {time() - t0:.3f} sec. " \
+                f"(not found {self.df[self.df['Latitude']==0].shape[0]})")
         # Restore Longitude
         t0 = time()
-        self.df.loc[self.df['isCoord']==0,'Longitude'] = \
-            self.df.loc[self.df['isCoord']==0][['SWE_Store_Key','Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4']].apply( \
-                self.get_avg_coordinate, args=(kladr_lon_grouped,), axis=1)
-        self.logger.debug(f"Longitude restoring finished in {time() - t0:.3f} sec. " \
-                                f"(not found {self.df[self.df['Longitude']==0].shape[0]})")
+        try:
+            self.df.loc[self.df['isCoord']==0,'Longitude'] = \
+                self.df.loc[self.df['isCoord']==0][['SWE_Store_Key','Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4']].apply( \
+                    self.get_avg_coordinate, args=(kladr_lon_grouped,), axis=1)
+        except Exception as err:
+            self.logger.exception(err)
+        finally:
+            self.logger.debug(f"Longitude restoring finished in {time() - t0:.3f} sec. " \
+                f"(not found {self.df[self.df['Longitude']==0].shape[0]})")            
         # remove unnecessary fields
-        self.df.drop(['Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4','Kladr_level_5'], axis=1, inplace=True)
-
+        self.df.drop(['Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4','Kladr_level_5'],
+                     axis=1, inplace=True)
+        
     def load_data(self):          
         """ Load and transform data """
         self.logger.info(f"Loading coordinates...")
@@ -160,6 +169,11 @@ class TerritoryFinder(object):
             'Segment_MWC_Segment_Name','Cluster_MWC','Ship_To_Visited',
             'Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4','Kladr_level_5',
             'Region_Last_Future_Ship_to','Last_Future_ship_to_Name','Last_Future_ship_to']]
+        # Remove with NaN SWE key
+        number_before = df_terr.shape[0]
+        df_terr = df_terr[~df_terr['SWE_Store_Key'].isna()]
+        if number_before - df_terr.shape[0] > 0:
+            self.logger.warning(f"Removed with NaN SWE key: {number_before - df_terr.shape[0]}")
         # Merging territories with coordinates
         self.df = pd.merge(df_terr, df_coor, on='SWE_Store_Key',how='left')
         del df_terr

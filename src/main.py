@@ -47,6 +47,11 @@ def main():
         # set an output file name
         output_file = os.path.splitext(args.report_file)[0] + " Updated.xlsx" if args.output_file == None else args.output_file
 
+        if output_file == args.report_file:
+            logger.error(f"Input and output reports have the identical name '{output_file}' " \
+                "Please set a unique name for the output report (--output_file parameter).")
+            sys.exit(1)
+
         # Initialize
         tf = TerritoryFinder(args.coord_file, args.report_file, output_file, samples_threshold=args.samples_threshold)
 
