@@ -80,7 +80,7 @@ class TerritoryFinder(object):
                     return kladr_grouped[row['Kladr_level_1'],row['Kladr_level_2']].mean()
                 except KeyError:
                     try:
-                        kladr_grouped[row['Kladr_level_1']].mean()
+                        return kladr_grouped[row['Kladr_level_1']].mean()
                     except KeyError:
                         text = f"Cannot get average coordinate for the locality {row['Kladr_level_1']}, " \
                             f"{row['Kladr_level_2']}, {row['Kladr_level_3']}, {row['Kladr_level_4']}"
