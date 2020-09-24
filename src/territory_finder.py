@@ -17,34 +17,39 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment, PatternFill
 
-class ModelNonTop200(object):
+class BaseModel(object):
 
-    def __init__(self, df, samples_threshold):
-        """ Class initialization, logging set-up, checking input files """
+    def __init__(self):
         self.logger = logging.getLogger('territory_finder_application.' + __name__)
-        self.logger.debug("Model Non Top 200 is initializing")
         # Traget variable, auxulary targets and service fields
-        self.target = 'Last_Future_ship_to'  
+        self.target = 'Last_Future_ship_to'
         self.target_aux = ['Region_Last_Future_Ship_to','Last_Future_ship_to_Name']
         self.service = ['isTrain','isCoord']
-        # This model process all non top 200 outlets
-        self.X_y = df[df['Trade_Structure']!='TOP200']
-        self.logger.debug(f"X_y shape {self.X_y.shape}")
-        # Unbalanced dataset. Use class_weight='balanced'
-        self.model = RandomForestClassifier(class_weight='balanced', n_estimators=40,
-            random_state=42, n_jobs=None, warm_start=False)
-        # List of all features
-        self.features = \
-            [column for column in self.X_y.columns \
-             if column not in [self.target] + self.target_aux + self.service]
-        self.logger.debug(f"features: {self.features}")
-        self.cat_features = self.X_y[self.features].select_dtypes(include=['object']).columns  # Categorical
-        self.num_features = self.X_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
-        # Ship-to classes for excluding
-        self.ships_to_exclude = self.get_ships_to_exclude(self.X_y, samples_threshold)
+        self.ordinal_encoder_x = OrdinalEncoder()
+        self.label_encoder_y = LabelEncoder()
+        # The next variables defines by descendant
+        self.features = None
+        self.cat_features = None
+        self.num_features = None
+        self.preds = None
+        self.X_train = None
+        self.X_valid = None
+        self.y_train = None
+        self.y_valid = None
+        self.X_training_enc = None
+        self.X_preds_enc = None
+        self.X_train_enc = None
+        self.X_valid_enc = None
+        self.y_training_enc = None
+        self.y_train_enc = None
+        self.y_valid_enc = None
+        self.clf = None
 
     def get_ships_to_exclude(self, df, threshold=2):
         """ Return a list of classes with samples less than threshold """
+        if df.empty:
+            self.logger.error(f"Envoke the load_data method first!")
+            raise Exception
         if threshold < 2:
             threshold = 2
         ship_counts = df[~df[self.target].isna()].groupby(self.target).size().to_frame()
@@ -60,81 +65,38 @@ class ModelNonTop200(object):
         for name in self.num_features:
             df[name].fillna(0, inplace=True)
         self.logger.debug(who_am_i())
+
         return df
     
     def drop_nan(self):
         pass
-    
-    def get_encoded(self):
-        """ Ordinal encoding implementation """
-        # Fill nan values
-        self.X_y = self.fill_nan(self.X_y)
-        # Training encoders on full dataset (X & y separately)
-        X = self.X_y[self.features]
-        self.ordinal_encoder_x = OrdinalEncoder().fit(X[self.cat_features])
-        y = self.X_y[self.X_y['isTrain']==True][self.target]
-        self.label_encoder_y = LabelEncoder().fit(y)
-        
-        # full training dataset
-        training = self.X_y[self.X_y['isTrain']==True]
-        init_rows = training.shape[0]
-        self.logger.debug(f"Rows in initial training dataset: {training.shape[0]}")
-        # Rows to remove from training
-        training_excluded = training[training[self.target].isin(self.ships_to_exclude)]
-        self.logger.debug(f"Rows that excluded from the training: {training_excluded.shape[0]}")
-        # Remove rows to remove from training
-        training = training[~training[self.target].isin(self.ships_to_exclude)]
-        self.logger.debug(f"Rows in training dataset: {training.shape[0]}")
-        assert init_rows == training.shape[0] + training_excluded.shape[0]
-        self.training = training
 
-        # full dataset for prediction
-        self.preds = self.X_y[self.X_y['isTrain']==False]
-        self.logger.debug(f"Rows in prediction dataset: {self.preds.shape[0]}")
-        
-        # Training-Validation split
-        self.X_train, self.X_valid, self.y_train, self.y_valid = \
-                train_test_split(self.training[self.features], self.training[self.target],
-                    test_size=0.3, random_state=42, stratify=self.training[self.target])
+    def X_transform(self, df):
+        # Transform of features
+        X = df[self.features]
+        X_cat = self.ordinal_encoder_x.transform(X[self.cat_features])
+        # Not transform
+        X_num = X[self.num_features]
+        # Объединить категорийные и числовые
+        X_enc = np.hstack([X_cat, X_num])
 
-        def X_transform(df):
-            # Transform of features
-            X = df[self.features]
-            X_cat = self.ordinal_encoder_x.transform(X[self.cat_features])
-            # Not transform
-            X_num = X[self.num_features]
-            # Объединить категорийные и числовые
-            X_enc = np.hstack([X_cat, X_num])
-
-            return X_enc
-        
-        self.X_training_enc = X_transform(training)
-        self.X_preds_enc = X_transform(self.preds)
-        self.X_train_enc = X_transform(self.X_train)
-        self.X_valid_enc = X_transform(self.X_valid)
-        
-        # Transform self.target variable
-        y = training[self.target]
-        # y is a DataFrame, converting to 1D array
-        self.y_training_enc = self.label_encoder_y.transform(y.values.ravel())
-        self.y_train_enc = self.label_encoder_y.transform(self.y_train.values.ravel())
-        self.y_valid_enc = self.label_encoder_y.transform(self.y_valid.values.ravel())
+        return X_enc
 
     def get_x_preds(self):
-        return self.preds[self.features]
+        return self.preds[self.features] 
 
     def get_x_valid(self):
         return self.X_valid
 
     def find_top_3(self, X_valid):
         """ Define top 3 classes for each outlet without an answer """
-        y_pred_proba = self.model.predict_proba(X_valid)
-        self.proba = pd.DataFrame(data=y_pred_proba, columns=self.model.classes_)
+        y_pred_proba = self.clf.predict_proba(X_valid)
+        self.proba = pd.DataFrame(data=y_pred_proba, columns=self.clf.classes_)
         self.logger.debug(f"proba.shape {self.proba.shape}")
 
         def get_max_3_classes(row):
             """ Get n-classes array and return TOP 3 classes with maximal probability """
-            ser = pd.Series(data=row.values, index=self.model.classes_)
+            ser = pd.Series(data=row.values, index=self.clf.classes_)
             ser.sort_values(inplace=True, ascending=False)
             return ser[0:3].index[0],ser[0:3].values[0], \
                 ser[0:3].index[1],ser[0:3].values[1], \
@@ -149,7 +111,7 @@ class ModelNonTop200(object):
         self.proba['top_3_class'] = self.label_encoder_y.inverse_transform(self.proba['top_3_class'].values.ravel())
         # Preserve only new columns with TOP-3 classes
         self.proba = self.proba.loc[:,'top_1_class':]
-        
+
     def get_statistics(self, X_valid, y_valid):
         """ Print statistics """
         self.find_top_3(X_valid)
@@ -203,26 +165,21 @@ class ModelNonTop200(object):
             rep_list.append("{0} {1:>10.2f} | interval ({2}, {3}] wrong / total = {4:.2f}%\n" \
                     .format(s, a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100, mid, top, v))
         self.logger.info(''.join(rep_list))
-        
+
     def validate(self):
-        """
-        Split the training dataset into the training and the validation parts
-        for training and validation
-        
-        """
-        self.get_encoded()
-        # Training, Validation, Cross-Validation
+        """ Training, Validation, Cross-Validation """
+        # self.get_encoded()
         t0 = time()
         # Cross-Validation goes on full training dataset
-        val_cv_score = cross_val_score(self.model, self.X_training_enc, self.y_training_enc, cv=3, scoring='balanced_accuracy')
+        val_cv_score = cross_val_score(self.clf, self.X_training_enc, self.y_training_enc, cv=3, scoring='balanced_accuracy')
         self.val_cv_score = np.array([round(item, 5) for item in val_cv_score])
         self.logger.info(f"Cross-validation average score: {self.val_cv_score.mean():.3f}")
         self.logger.debug(f"Cross-validation finished in {time() - t0:.3f} sec.")
         t0 = time()
-        self.model.fit(self.X_train_enc, self.y_train_enc)
+        self.clf.fit(self.X_train_enc, self.y_train_enc)
         self.logger.debug(f"Training finished in {time() - t0:.3f} sec.")
         t0 = time()
-        y_pred = self.model.predict(self.X_valid_enc)
+        y_pred = self.clf.predict(self.X_valid_enc)
         self.val_score = balanced_accuracy_score(self.y_valid_enc, y_pred)
         self.logger.info(f"Balanced accuracy score: {self.val_score:.3f}")
         self.logger.debug(f"Validation finished in {time() - t0:.1f} sec.")
@@ -232,24 +189,87 @@ class ModelNonTop200(object):
     def fit(self):
         """ Training on full data set """
         self.logger.info("Final training...")
-        self.get_encoded()
+        # self.get_encoded()
         t0 = time()
-        self.model.fit(self.X_training_enc, self.y_training_enc)
+        self.clf.fit(self.X_training_enc, self.y_training_enc)
         self.logger.debug(f"Final training finished in {time() - t0:.3f} sec.")
         self.find_top_3(self.X_preds_enc)
 
         return self.proba
 
-class ModelTop200(object):
+class ModelNonTop200(BaseModel):
 
     def __init__(self, df, samples_threshold):
         """ Class initialization, logging set-up, checking input files """
-        self.logger = logging.getLogger('territory_finder_application.' + __name__)
+        super().__init__()
+        self.logger.debug("Model Non Top 200 is initializing")
+        # This model process all non top 200 outlets
+        self.X_y = df[df['Trade_Structure']!='TOP200']
+        self.logger.debug(f"X_y shape {self.X_y.shape}")
+        # Unbalanced dataset. Use class_weight='balanced'
+        self.clf = RandomForestClassifier(class_weight='balanced', n_estimators=40,
+            random_state=42, n_jobs=None, warm_start=False)
+        # List of all features
+        self.features = \
+            [column for column in self.X_y.columns \
+             if column not in [self.target] + self.target_aux + self.service]
+        self.logger.debug(f"features: {self.features}")
+        self.cat_features = self.X_y[self.features].select_dtypes(include=['object']).columns  # Categorical
+        self.num_features = self.X_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
+        # Ship-to classes for excluding
+        self.ships_to_exclude = self.get_ships_to_exclude(self.X_y, samples_threshold)
+        self.get_encoded()
+
+    def get_encoded(self):
+        """ Ordinal encoding implementation """
+        # Fill nan values
+        self.X_y = self.fill_nan(self.X_y)
+        # Training encoders on full dataset (X & y separately)
+        X = self.X_y[self.features]
+        self.ordinal_encoder_x.fit(X[self.cat_features])
+        y = self.X_y[self.X_y['isTrain']==True][self.target]
+        self.label_encoder_y.fit(y)
+        
+        # full training dataset
+        training = self.X_y[self.X_y['isTrain']==True]
+        init_rows = training.shape[0]
+        self.logger.debug(f"Rows in initial training dataset: {training.shape[0]}")
+        # Rows to remove from training
+        training_excluded = training[training[self.target].isin(self.ships_to_exclude)]
+        self.logger.debug(f"Rows that excluded from the training: {training_excluded.shape[0]}")
+        # Remove rows to remove from training
+        training = training[~training[self.target].isin(self.ships_to_exclude)]
+        self.logger.debug(f"Rows in training dataset: {training.shape[0]}")
+        assert init_rows == training.shape[0] + training_excluded.shape[0]
+        self.training = training
+
+        # full dataset for prediction
+        self.preds = self.X_y[self.X_y['isTrain']==False]
+        self.logger.debug(f"Rows in prediction dataset: {self.preds.shape[0]}")
+        
+        # Training-Validation split
+        self.X_train, self.X_valid, self.y_train, self.y_valid = \
+                train_test_split(self.training[self.features], self.training[self.target],
+                    test_size=0.3, random_state=42, stratify=self.training[self.target])
+        
+        self.X_training_enc = self.X_transform(training)
+        self.X_preds_enc = self.X_transform(self.preds)
+        self.X_train_enc = self.X_transform(self.X_train)
+        self.X_valid_enc = self.X_transform(self.X_valid)
+        
+        # Transform self.target variable
+        y = training[self.target]
+        # y is a DataFrame, converting to 1D array
+        self.y_training_enc = self.label_encoder_y.transform(y.values.ravel())
+        self.y_train_enc = self.label_encoder_y.transform(self.y_train.values.ravel())
+        self.y_valid_enc = self.label_encoder_y.transform(self.y_valid.values.ravel())
+
+class ModelTop200(BaseModel):
+
+    def __init__(self, df, samples_threshold):
+        """ Class initialization, logging set-up, checking input files """
+        super().__init__()
         self.logger.debug("Model Top 200 is initializing")
-        # Traget variable, auxulary targets and service fields
-        self.target = 'Last_Future_ship_to'
-        self.target_aux = ['Region_Last_Future_Ship_to','Last_Future_ship_to_Name']
-        self.service = ['isTrain','isCoord']
         # This model process only top 200 outlets using reduced set of features
         self.X_y = df[(df['Trade_Structure']=='TOP200')][['Chain_Id','Kladr_level_1','Ship_To_Visited',
             'isTrain','Region_Last_Future_Ship_to','Last_Future_ship_to_Name','Last_Future_ship_to']]
@@ -265,7 +285,7 @@ class ModelTop200(object):
         self.logger.debug(f"X_y shape {self.X_y.shape}")
         self.logger.debug(f"X_y_excluded shape {self.X_y_excluded.shape}")
         # Unbalanced dataset. Use class_weight='balanced'
-        self.model = DecisionTreeClassifier(class_weight='balanced', random_state=42)        
+        self.clf = DecisionTreeClassifier(class_weight='balanced', random_state=42)        
         # List of features
         self.features = \
             [column for column in self.X_y.columns \
@@ -275,42 +295,17 @@ class ModelTop200(object):
         self.num_features = self.X_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
         # Ship-to classes for excluding
         self.ships_to_exclude = self.get_ships_to_exclude(self.X_y, samples_threshold)
+        self.get_encoded()
 
-    def get_ships_to_exclude(self, df, threshold=2):
-        """ Return a list of classes with samples less than threshold """
-        if df.empty:
-            self.logger.error(f"Envoke the load_data method first!")
-            raise Exception
-        if threshold < 2:
-            threshold = 2
-        ship_counts = df[~df[self.target].isna()].groupby(self.target).size().to_frame()
-        ship_counts.reset_index(inplace=True)
-        ship_counts.columns = [self.target,'Counts']
-        
-        return [str(item) for item in list(ship_counts[self.target][ship_counts['Counts']<threshold].values)]
-
-    def fill_nan(self, df):
-        """ Fill NaN values, not affecting the target variable """
-        for name in self.cat_features:
-            df[name].fillna('missing', inplace=True)
-        for name in self.num_features:
-            df[name].fillna(0, inplace=True)
-        self.logger.debug(who_am_i())
-
-        return df
-    
-    def drop_nan(self):
-        pass
-    
     def get_encoded(self):
         """ Ordinal encoding implementation """
         # Fill nan values
         self.X_y = self.fill_nan(self.X_y)
         # Training encoders on full dataset (X & y separately)
         X = self.X_y[self.features]
-        self.ordinal_encoder_x = OrdinalEncoder().fit(X[self.cat_features])
+        self.ordinal_encoder_x.fit(X[self.cat_features])
         y = self.X_y[self.X_y['isTrain']==True][self.target]
-        self.label_encoder_y = LabelEncoder().fit(y)
+        self.label_encoder_y.fit(y)
         
         # full training dataset
         training = self.X_y[self.X_y['isTrain']==True]
@@ -342,22 +337,11 @@ class ModelTop200(object):
         self.X_train, self.X_valid, self.y_train, self.y_valid = \
                 train_test_split(self.training[self.features], self.training[self.target],
                     test_size=0.3, random_state=42, stratify=self.training[self.target])
-        
-        def X_transform(df):
-            # Transform of features
-            X = df[self.features]
-            X_cat = self.ordinal_encoder_x.transform(X[self.cat_features])
-            # Not transform
-            X_num = X[self.num_features]
-            # Объединить категорийные и числовые
-            X_enc = np.hstack([X_cat, X_num])
-
-            return X_enc
-        
-        self.X_training_enc = X_transform(training)
-        self.X_preds_enc = X_transform(self.preds)
-        self.X_train_enc = X_transform(self.X_train)
-        self.X_valid_enc = X_transform(self.X_valid)
+            
+        self.X_training_enc = self.X_transform(training)
+        self.X_preds_enc = self.X_transform(self.preds)
+        self.X_train_enc = self.X_transform(self.X_train)
+        self.X_valid_enc = self.X_transform(self.X_valid)
         
         # Transform self.target variable
         y = training[self.target]
@@ -365,126 +349,6 @@ class ModelTop200(object):
         self.y_training_enc = self.label_encoder_y.transform(y.values.ravel())
         self.y_train_enc = self.label_encoder_y.transform(self.y_train.values.ravel())
         self.y_valid_enc = self.label_encoder_y.transform(self.y_valid.values.ravel())
-        
-    def get_x_preds(self):
-        return self.preds[self.features] 
-
-    def get_x_valid(self):
-        return self.X_valid
-
-    def find_top_3(self, X_valid):
-        """ Define top 3 classes for each outlet without an answer """
-        y_pred_proba = self.model.predict_proba(X_valid)
-        self.proba = pd.DataFrame(data=y_pred_proba, columns=self.model.classes_)
-        self.logger.debug(f"proba.shape {self.proba.shape}")
-
-        def get_max_3_classes(row):
-            """ Get n-classes array and return TOP 3 classes with maximal probability """
-            ser = pd.Series(data=row.values, index=self.model.classes_)
-            ser.sort_values(inplace=True, ascending=False)
-            return ser[0:3].index[0],ser[0:3].values[0], \
-                ser[0:3].index[1],ser[0:3].values[1], \
-                ser[0:3].index[2],ser[0:3].values[2]
-
-        self.proba['top_1_class'], self.proba['top_1_proba'], \
-            self.proba['top_2_class'], self.proba['top_2_proba'], \
-            self.proba['top_3_class'], self.proba['top_3_proba'] = zip(*self.proba.apply(get_max_3_classes, axis=1))
-        # inversion is needed
-        self.proba['top_1_class'] = self.label_encoder_y.inverse_transform(self.proba['top_1_class'].values.ravel())
-        self.proba['top_2_class'] = self.label_encoder_y.inverse_transform(self.proba['top_2_class'].values.ravel())
-        self.proba['top_3_class'] = self.label_encoder_y.inverse_transform(self.proba['top_3_class'].values.ravel())
-        # Preserve only new columns with TOP-3 classes
-        self.proba = self.proba.loc[:,'top_1_class':]
-        
-    def get_statistics(self, X_valid, y_valid):
-        """ Print statistics """
-        self.find_top_3(X_valid)
-        # y_valid is encoded, inversion is needed
-        self.proba['y_valid'] = self.label_encoder_y.inverse_transform(y_valid)
-        self.proba['correct_1'] = self.proba.apply(lambda x: int(x.top_1_class==x.y_valid),axis=1)
-        self.proba['correct_2'] = self.proba.apply(lambda x: int(x.top_2_class==x.y_valid),axis=1)
-        self.proba['correct_3'] = self.proba.apply(lambda x: int(x.top_3_class==x.y_valid),axis=1)
-        # Total predictions
-        total = self.proba.shape[0]
-        # Number of correct predictions by class
-        corr_cl1 = self.proba[self.proba.top_1_class==self.proba.y_valid].shape[0]
-        corr_cl2 = self.proba[self.proba.top_2_class==self.proba.y_valid].shape[0]
-        corr_cl3 = self.proba[self.proba.top_3_class==self.proba.y_valid].shape[0]
-        not_correct = total - (corr_cl1 + corr_cl2 + corr_cl3)
-        self.logger.info(f"""
-        Total predictions: {total}
-        Correct: {corr_cl1 / total * 100:.1f}% ({corr_cl1})
-        Predicted in the 2nd option: {corr_cl2 / total * 100:.2f}% ({corr_cl2})
-        Predicted in the 3rd option: {corr_cl3 / total * 100:.3f}% ({corr_cl3})
-        Not predicted at all {not_correct / total * 100:.3f}% ({not_correct})
-        """)
-
-        def get_proba_info(class_num, proba_from, proba_to):
-            """ Get class and return a number of correct, incorrect predictions in interval """
-            correct_num = self.proba[(self.proba[class_num+'_class']==self.proba.y_valid)& \
-                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
-            incorrect_num = self.proba[(self.proba[class_num+'_class']!=self.proba.y_valid)& \
-                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
-            return correct_num, incorrect_num, (proba_from, proba_to)
-
-        correct, incorrect, index = [], [], []
-        for edge in range(20,100,10):
-            cor, inc, ind = get_proba_info('top_1',edge/100,(edge+10)/100)
-            correct.append(cor)
-            incorrect.append(inc)
-            index.append(ind)
-
-        # Print out ratio of wrong and right predictions in each interval            
-        a = pd.DataFrame(data={'correct':correct[::-1], 'incorrect':incorrect[::-1]}, index=index[::-1])
-        top = 1
-        rep_list = []
-        rep_list.append(f"\n{'Interval':>12} {'Right':>8} {'Wrong':>10} {'Wrn./Tot.':>11}\n")
-        for i in range(len(a)):
-            mid = a.index[i][0]
-            s = f"{str(a.index[i]):>12} {a.correct[i]:>8} {a.incorrect[i]:>10}"
-            if i==0:
-                v = a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100
-            else:
-                v = a.incorrect[:i+1].sum() / (a.incorrect[:i+1].sum() + a.correct[:i+1].sum()) * 100
-            rep_list.append("{0} {1:>10.2f} | interval ({2}, {3}] wrong / total = {4:.2f}%\n" \
-                    .format(s, a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100, mid, top, v))
-        self.logger.info(''.join(rep_list))
-        
-    def validate(self):
-        """
-        Split the training dataset into the training and the validation parts
-        for training and validation
-        
-        """
-        self.get_encoded()
-        # Training, Validation, Cross-Validation
-        t0 = time()
-        # Cross-Validation goes on full training dataset
-        val_cv_score = cross_val_score(self.model, self.X_training_enc, self.y_training_enc, cv=3, scoring='balanced_accuracy')
-        self.val_cv_score = np.array([round(item, 5) for item in val_cv_score])
-        self.logger.info(f"Cross-validation average score: {self.val_cv_score.mean():.3f}")
-        self.logger.debug(f"Cross-validation finished in {time() - t0:.3f} sec.")
-        t0 = time()
-        self.model.fit(self.X_train_enc, self.y_train_enc)
-        self.logger.debug(f"Training finished in {time() - t0:.3f} sec.")
-        t0 = time()
-        y_pred = self.model.predict(self.X_valid_enc)
-        self.val_score = balanced_accuracy_score(self.y_valid_enc, y_pred)
-        self.logger.info(f"Balanced accuracy score: {self.val_score:.3f}")
-        self.logger.debug(f"Validation finished in {time() - t0:.1f} sec.")
-        # print statistics
-        self.get_statistics(self.X_valid_enc, self.y_valid_enc)
-
-    def fit(self):
-        """ Training on full data set """
-        self.logger.info("Final training...")
-        self.get_encoded()
-        t0 = time()
-        self.model.fit(self.X_training_enc, self.y_training_enc)
-        self.logger.debug(f"Final training finished in {time() - t0:.3f} sec.")
-        self.find_top_3(self.X_preds_enc)
-
-        return self.proba
 
 class TerritoryFinder(object):
     
@@ -692,34 +556,32 @@ class TerritoryFinder(object):
         self.restore_coordinates()
         # Set SWE_Store_Key as index thereby exclude it from features
         self.df.set_index('SWE_Store_Key',inplace=True)
+        # Initiate models
+        self.model1 = ModelNonTop200(self.df, self.samples_threshold)
+        self.model2 = ModelTop200(self.df, self.samples_threshold)
 
     def validate(self):
-        model = ModelNonTop200(self.df, self.samples_threshold)
-        model.validate()
-        model_top200 = ModelTop200(self.df, self.samples_threshold)
-        model_top200.validate()
+        self.model1.validate()
+        self.model2.validate()
 
     def get_report(self):
         """ Prepare a new report """
         self.logger.info("Calculate proba...")
         t0 = time()
-        # Generate proba for non TOP 200 model
-        model1 = ModelNonTop200(self.df, self.samples_threshold)
-        proba1 = model1.fit()
-        # Generate proba for TOP 200 model
-        model2 = ModelTop200(self.df, self.samples_threshold)
-        proba2 = model2.fit()
-        
-        X_pred1 = model1.get_x_preds()
+        # Generate proba datasets for both models
+        proba1 = self.model1.fit()
+        proba2 = self.model2.fit()
+        # Join proba1 with outlet codes
+        X_pred1 = self.model1.get_x_preds()
         X_pred1.reset_index(inplace=True)
         df1 = pd.concat([X_pred1['SWE_Store_Key'], proba1], axis=1,join='inner')
-        
-        X_pred2 = model2.get_x_preds()
+        # Join proba2 with outlet codes
+        X_pred2 = self.model2.get_x_preds()
         X_pred2.reset_index(inplace=True)
         df2 = pd.concat([X_pred2['SWE_Store_Key'], proba2], axis=1,join='inner')
-        
+        # Create one big proba with outlet codes
         df = pd.concat([df1, df2])
-
+        # Prepare data that will be added to basic report
         df_info = self.df_codes.merge(right=df, how='left', on='SWE_Store_Key')
         df_info['SWE_Store_Key'] = df_info['SWE_Store_Key'].astype('str')
         self.logger.debug(f"Done in {time() - t0:.3f} sec.")
