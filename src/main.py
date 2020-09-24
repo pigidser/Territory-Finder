@@ -55,7 +55,7 @@ def main():
         # Initialize
         tf = TerritoryFinder(args.coord_file, args.report_file, output_file, samples_threshold=args.samples_threshold)
 
-        total_steps = 5
+        total_steps = 4
 
         logger.info(f"Step 1 of {total_steps}: Loading and prepare data")
         tf.load_data()
@@ -63,13 +63,10 @@ def main():
         logger.info(f"Step 2 of {total_steps}: Validate the model")
         tf.validate()
 
-        # logger.info(f"Step 3 of {total_steps}: Train the model")
-        # tf.fit()
-
-        logger.info(f"Step 4 of {total_steps}: Prepare report")
+        logger.info(f"Step 3 of {total_steps}: Prepare report")
         tf.get_report()
 
-        logger.info(f"Step 5 of {total_steps}: Save report")
+        logger.info(f"Step 4 of {total_steps}: Save report")
         tf.save_report()
 
         logger.info(f"Total elapsed time {time() - t0:.3f} sec.")

@@ -446,7 +446,7 @@ class TerritoryFinder(object):
             # Series with MultiIndex
             kladr_grouped = self.df[self.df['isCoord']==1]. \
                 groupby(['Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4'])[part_name].mean()
-            self.df.loc[self.df['isCoord']==0,'part_name'] = \
+            self.df.loc[self.df['isCoord']==0,part_name] = \
                 self.df.loc[self.df['isCoord']==0] \
                 [['SWE_Store_Key','Kladr_level_1','Kladr_level_2','Kladr_level_3','Kladr_level_4']].apply( \
                 self.get_avg_coordinate, args=(kladr_grouped,), axis=1)
