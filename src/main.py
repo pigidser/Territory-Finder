@@ -63,8 +63,8 @@ def main():
         logger.info(f"Step 2 of {total_steps}: Validate the model")
         tf.validate()
 
-        logger.info(f"Step 3 of {total_steps}: Train the model")
-        tf.fit()
+        # logger.info(f"Step 3 of {total_steps}: Train the model")
+        # tf.fit()
 
         logger.info(f"Step 4 of {total_steps}: Prepare report")
         tf.get_report()
@@ -78,7 +78,8 @@ def main():
         logger.exception(err)
 
     finally:
-        sys.exit(1)
+        pass
+        # sys.exit(1)
 
 if __name__ == '__main__':
     main()
