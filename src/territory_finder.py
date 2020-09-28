@@ -165,7 +165,9 @@ class BaseModel(object):
             else:
                 v = a.incorrect[:i+1].sum() / (a.incorrect[:i+1].sum() + a.correct[:i+1].sum()) * 100
             rep_list.append("{0} {1:>10.2f} | interval ({2}, {3}] wrong / total = {4:.2f}%\n" \
-                    .format(s, a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100, mid, top, v))
+                    .format(s,
+                        a.incorrect[i] / (a.incorrect[i] + a.correct[i]) * 100 if (a.incorrect[i] + a.correct[i]) > 0 else 0,
+                        mid, top, v))
         self.logger.info(''.join(rep_list))
 
     def validate(self):
@@ -207,7 +209,7 @@ class ModelNonTop200(BaseModel):
         self.model_description = 'Model Non Top 200'
         self.logger.debug(f"{self.model_description} is initializing")
         # This model process all non top 200 outlets
-        self.X_y = df[df['Trade_Structure']!='TOP200']
+        self.X_y = df.loc[df['Trade_Structure']!='TOP200',:].copy()
         self.logger.debug(f"X_y shape {self.X_y.shape}")
         # Unbalanced dataset. Use class_weight='balanced'
         self.clf = RandomForestClassifier(class_weight='balanced', n_estimators=40,
@@ -269,14 +271,14 @@ class ModelNonTop200(BaseModel):
 
 class ModelTop200(BaseModel):
 
-    def __init__(self, df, samples_threshold):
+    def __init__(self, df, samples_threshold, pred_blank_top200):
         """ Class initialization, logging set-up, checking input files """
         super().__init__()
         self.model_description = 'Model Top 200'
         self.logger.debug(f"{self.model_description} is initializing")
         # This model process only top 200 outlets using reduced set of features
-        self.X_y = df[(df['Trade_Structure']=='TOP200')][['Chain_Id','Kladr_level_1','Ship_To_Visited',
-            'isTrain','Region_Last_Future_Ship_to','Last_Future_ship_to_Name','Last_Future_ship_to']]
+        self.X_y = df.loc[df['Trade_Structure']=='TOP200',['Chain_Id','Kladr_level_1','Ship_To_Visited',
+            'isTrain','Region_Last_Future_Ship_to','Last_Future_ship_to_Name','Last_Future_ship_to']].copy()
         # The trainig dataset includes rows:
         # 1. with all NaN target (to prediction)
         # 2. or only target that equal to Ship_To_Visited (for training)
@@ -299,6 +301,8 @@ class ModelTop200(BaseModel):
         self.num_features = self.X_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
         # Ship-to classes for excluding
         self.ships_to_exclude = self.get_ships_to_exclude(self.X_y, samples_threshold)
+        # 1 - perform prediction (0 - otherwise) for outlets with blank Ship-To (Visited) fields
+        self.pred_blank_top200 = pred_blank_top200
         self.get_encoded()
 
     def get_encoded(self):
@@ -326,15 +330,17 @@ class ModelTop200(BaseModel):
 
         # full dataset for prediction
         preds = self.X_y[self.X_y['isTrain']==False]
-        init_rows = preds.shape[0]
-        self.logger.debug(f"Rows in initial prediction dataset: {init_rows}")
-        # Rows to remove from prediction (where Ship_To_visited is missed)
-        preds_excluded = preds[preds['Ship_To_Visited']=='missing']
-        self.logger.debug(f"Rows that excluded from the prediction: {preds_excluded.shape[0]}")
-        # Remove rows from prediction
-        preds = preds[preds['Ship_To_Visited']!='missing']        
-        self.logger.debug(f"Rows in prediction dataset: {preds.shape[0]}")
-        assert init_rows == preds.shape[0] + preds_excluded.shape[0]
+        if not self.pred_blank_top200:
+            # 0 - do not perform prediction for outlets with blank Ship-To (Visited) fields
+            init_rows = preds.shape[0]
+            self.logger.debug(f"Rows in initial prediction dataset: {init_rows}")
+            # Rows to remove from prediction (where Ship_To_visited is missed)
+            preds_excluded = preds[preds['Ship_To_Visited']=='missing']
+            self.logger.debug(f"Rows that excluded from the prediction: {preds_excluded.shape[0]}")
+            # Remove rows from prediction
+            preds = preds[preds['Ship_To_Visited']!='missing']        
+            self.logger.debug(f"Rows in prediction dataset: {preds.shape[0]}")
+            assert init_rows == preds.shape[0] + preds_excluded.shape[0]
         self.preds = preds
 
         # Training-Validation split
@@ -356,7 +362,7 @@ class ModelTop200(BaseModel):
 
 class TerritoryFinder(object):
     
-    def __init__(self, coord_file, report_file, output_file, samples_threshold=2):
+    def __init__(self, coord_file, report_file, output_file, samples_threshold=2, pred_blank_top200=1):
         """ Class initialization, logging set-up, checking input files """
         self.logger = logging.getLogger('territory_finder_application.' + __name__)
         # input and output files
@@ -364,8 +370,10 @@ class TerritoryFinder(object):
         # self.df = pd.DataFrame()
         # self.X_train_enc, self.y_enc_train, self.X_preds_enc = None, None, None
         self.check_files()
-        # Порог для исключения классов
+        # The threshold for excluding class from prediction
         self.samples_threshold = samples_threshold
+        # 1 - perform prediction (0 - otherwise) for outlets with blank Ship-To (Visited) fields
+        self.pred_blank_top200 = pred_blank_top200
         # Traget variable, auxulary targets and service fields
         self.target = 'Last_Future_ship_to'  
         self.target_aux = ['Region_Last_Future_Ship_to','Last_Future_ship_to_Name']
@@ -562,7 +570,7 @@ class TerritoryFinder(object):
         self.df.set_index('SWE_Store_Key',inplace=True)
         # Initiate models
         self.model1 = ModelNonTop200(self.df, self.samples_threshold)
-        self.model2 = ModelTop200(self.df, self.samples_threshold)
+        self.model2 = ModelTop200(self.df, self.samples_threshold, self.pred_blank_top200)
 
     def validate(self):
         self.model1.validate()

@@ -1,1 +1,1 @@
-python main.py -c .\data\Coordinates_sample.xlsx -r ".\data\Report Territory Management_sample.xlsx"
+python main.py -c .\data\Coordinates_sample.xlsx -r ".\data\Report Territory Management_sample.xlsx" --samples_threshold 3 --pred_blank_top200 0
