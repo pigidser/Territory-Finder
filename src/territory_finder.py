@@ -44,6 +44,7 @@ class BaseModel(object):
         self.y_train_enc = None
         self.y_valid_enc = None
         self.clf = None
+        self.model_description = None
 
     def get_ships_to_exclude(self, df, threshold=2):
         """ Return a list of classes with samples less than threshold """
@@ -114,6 +115,7 @@ class BaseModel(object):
 
     def get_statistics(self, X_valid, y_valid):
         """ Print statistics """
+        self.logger.info(f"{self.model_description} statistics")
         self.find_top_3(X_valid)
         # y_valid is encoded, inversion is needed
         self.proba['y_valid'] = self.label_encoder_y.inverse_transform(y_valid)
@@ -168,7 +170,7 @@ class BaseModel(object):
 
     def validate(self):
         """ Training, Validation, Cross-Validation """
-        # self.get_encoded()
+        self.logger.info(f"{self.model_description} validation")
         t0 = time()
         # Cross-Validation goes on full training dataset
         val_cv_score = cross_val_score(self.clf, self.X_training_enc, self.y_training_enc, cv=3, scoring='balanced_accuracy')
@@ -188,7 +190,7 @@ class BaseModel(object):
 
     def fit(self):
         """ Training on full data set """
-        self.logger.info("Final training...")
+        self.logger.info(f"Final training {self.model_description}...")
         # self.get_encoded()
         t0 = time()
         self.clf.fit(self.X_training_enc, self.y_training_enc)
@@ -202,7 +204,8 @@ class ModelNonTop200(BaseModel):
     def __init__(self, df, samples_threshold):
         """ Class initialization, logging set-up, checking input files """
         super().__init__()
-        self.logger.debug("Model Non Top 200 is initializing")
+        self.model_description = 'Model Non Top 200'
+        self.logger.debug(f"{self.model_description} is initializing")
         # This model process all non top 200 outlets
         self.X_y = df[df['Trade_Structure']!='TOP200']
         self.logger.debug(f"X_y shape {self.X_y.shape}")
@@ -269,7 +272,8 @@ class ModelTop200(BaseModel):
     def __init__(self, df, samples_threshold):
         """ Class initialization, logging set-up, checking input files """
         super().__init__()
-        self.logger.debug("Model Top 200 is initializing")
+        self.model_description = 'Model Top 200'
+        self.logger.debug(f"{self.model_description} is initializing")
         # This model process only top 200 outlets using reduced set of features
         self.X_y = df[(df['Trade_Structure']=='TOP200')][['Chain_Id','Kladr_level_1','Ship_To_Visited',
             'isTrain','Region_Last_Future_Ship_to','Last_Future_ship_to_Name','Last_Future_ship_to']]
@@ -366,7 +370,7 @@ class TerritoryFinder(object):
         self.target = 'Last_Future_ship_to'  
         self.target_aux = ['Region_Last_Future_Ship_to','Last_Future_ship_to_Name']
         self.service = ['isTrain','isCoord']
-        self.logger.debug("TerritoryFinder class initialized")
+        self.logger.debug("TerritoryFinder initialized")
     
     def check_files(self):
         """ Check if input files exist and output file is closed """
@@ -437,7 +441,7 @@ class TerritoryFinder(object):
                     except KeyError:
                         text = f"Cannot get average coordinate for the locality {row['Kladr_level_1']}, " \
                             f"{row['Kladr_level_2']}, {row['Kladr_level_3']}, {row['Kladr_level_4']}"
-                        self.logger.debug(text)
+                        self.logger.warning(text)
                         return 0
     
     def restore_coordinate_part(self, part_name):
