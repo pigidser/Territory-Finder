@@ -41,9 +41,6 @@ def main():
             help="Please specify the output file name", required=False)
         parser.add_argument("-s", "--samples_threshold", type=int, action='store',
             help="Specify a minimal samples number in a class", default=2, required=False)
-        parser.add_argument("-t", "--pred_blank_top200", type=int, action='store',
-            help="Specify 1 to perform prediction (0 - otherwise) for outlets with blank Ship-To (Visited) fields. Actual only for outlets in TOP 200 chains",
-                default=1, required=False)
 
         args = parser.parse_args()
 
@@ -56,8 +53,7 @@ def main():
             sys.exit(1)
 
         # Initialize
-        tf = TerritoryFinder(args.coord_file, args.report_file, output_file, samples_threshold=args.samples_threshold,
-            pred_blank_top200=args.pred_blank_top200)
+        tf = TerritoryFinder(args.coord_file, args.report_file, output_file, samples_threshold=args.samples_threshold)
 
         total_steps = 4
 

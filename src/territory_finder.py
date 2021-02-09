@@ -6,12 +6,11 @@ from time import time
 import numpy as np
 import pandas as pd
 
-from sklearn.preprocessing import OrdinalEncoder
-from sklearn.preprocessing import LabelEncoder
+import xgboost
+# import category_encoders as ce
+from sklearn.preprocessing import OrdinalEncoder, LabelEncoder
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import balanced_accuracy_score, accuracy_score
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
@@ -32,14 +31,14 @@ class BaseModel(object):
         self.cat_features = None
         self.num_features = None
         self.preds = None
-        self.X_train = None
-        self.X_valid = None
+        self.x_train = None
+        self.x_valid = None
         self.y_train = None
         self.y_valid = None
-        self.X_training_enc = None
-        self.X_preds_enc = None
-        self.X_train_enc = None
-        self.X_valid_enc = None
+        self.x_training_enc = None
+        self.x_preds_enc = None
+        self.x_train_enc = None
+        self.x_valid_enc = None
         self.y_training_enc = None
         self.y_train_enc = None
         self.y_valid_enc = None
@@ -61,6 +60,7 @@ class BaseModel(object):
 
     def fill_nan(self, df):
         """ Fill NaN values, not affecting the target variable """
+        
         for name in self.cat_features:
             df[name].fillna('missing', inplace=True)
         for name in self.num_features:
@@ -71,30 +71,35 @@ class BaseModel(object):
     
     def drop_nan(self):
         pass
+    
+    def is_nothing_to_predict(self):
+        """ Check if the Last_Future_ship_to field consists with empty values """
+        if self.preds.shape[0] == 0:
+            self.logger.error(f"Nothing to predict! There are not empty values in the column Last_Future_ship_to in Territory Management Report does not have empty values!")
+            raise Exception
 
-    def X_transform(self, df):
+    def x_transform(self, df):
         # Transform of features
         X = df[self.features]
-        X_cat = self.ordinal_encoder_x.transform(X[self.cat_features])
+        x_cat = self.ordinal_encoder_x.transform(X[self.cat_features])
         # Not transform
-        X_num = X[self.num_features]
+        x_num = X[self.num_features]
         # Объединить категорийные и числовые
-        X_enc = np.hstack([X_cat, X_num])
+        x_enc = np.hstack([x_cat, x_num])
 
-        return X_enc
+        return x_enc
 
     def get_x_preds(self):
         return self.preds[self.features] 
 
     def get_x_valid(self):
-        return self.X_valid
+        return self.x_valid
 
-    def find_top_3(self, X_valid):
-        """ Define top 3 classes for each outlet without an answer """
-        y_pred_proba = self.clf.predict_proba(X_valid)
-        self.proba = pd.DataFrame(data=y_pred_proba, columns=self.clf.classes_)
-        self.logger.debug(f"proba.shape {self.proba.shape}")
-
+    def find_top_3(self, x_valid):
+        """
+        Define top 3 classes for each outlet without an answer
+        
+        """
         def get_max_3_classes(row):
             """ Get n-classes array and return TOP 3 classes with maximal probability """
             ser = pd.Series(data=row.values, index=self.clf.classes_)
@@ -102,7 +107,12 @@ class BaseModel(object):
             return ser[0:3].index[0],ser[0:3].values[0], \
                 ser[0:3].index[1],ser[0:3].values[1], \
                 ser[0:3].index[2],ser[0:3].values[2]
-
+        
+        # Make prediction and create dataframe with probability of each class 
+        y_pred_proba = self.clf.predict_proba(x_valid)
+        self.proba = pd.DataFrame(data=y_pred_proba, columns=self.clf.classes_)
+        self.logger.debug(f"proba.shape {self.proba.shape}")
+        # Create new columns for TOP-3 probable classes for each prediction
         self.proba['top_1_class'], self.proba['top_1_proba'], \
             self.proba['top_2_class'], self.proba['top_2_proba'], \
             self.proba['top_3_class'], self.proba['top_3_proba'] = zip(*self.proba.apply(get_max_3_classes, axis=1))
@@ -113,10 +123,21 @@ class BaseModel(object):
         # Preserve only new columns with TOP-3 classes
         self.proba = self.proba.loc[:,'top_1_class':]
 
-    def get_statistics(self, X_valid, y_valid):
-        """ Print statistics """
+    def get_statistics(self, x_valid, y_valid):
+        """
+        Print statistics
+        
+        """
+        def get_proba_info(class_num, proba_from, proba_to):
+            """ Get class and return a number of correct, incorrect predictions in interval """
+            correct_num = self.proba[(self.proba[class_num+'_class']==self.proba.y_valid)& \
+                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
+            incorrect_num = self.proba[(self.proba[class_num+'_class']!=self.proba.y_valid)& \
+                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
+            return correct_num, incorrect_num, (proba_from, proba_to)
+
         self.logger.info(f"{self.model_description} statistics")
-        self.find_top_3(X_valid)
+        self.find_top_3(x_valid)
         # y_valid is encoded, inversion is needed
         self.proba['y_valid'] = self.label_encoder_y.inverse_transform(y_valid)
         self.proba['correct_1'] = self.proba.apply(lambda x: int(x.top_1_class==x.y_valid),axis=1)
@@ -136,14 +157,6 @@ class BaseModel(object):
         Predicted in the 3rd option: {corr_cl3 / total * 100:.3f}% ({corr_cl3})
         Not predicted at all {not_correct / total * 100:.3f}% ({not_correct})
         """)
-
-        def get_proba_info(class_num, proba_from, proba_to):
-            """ Get class and return a number of correct, incorrect predictions in interval """
-            correct_num = self.proba[(self.proba[class_num+'_class']==self.proba.y_valid)& \
-                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
-            incorrect_num = self.proba[(self.proba[class_num+'_class']!=self.proba.y_valid)& \
-                (self.proba[class_num+'_proba']>proba_from)&(self.proba[class_num+'_proba']<=proba_to)].shape[0]
-            return correct_num, incorrect_num, (proba_from, proba_to)
 
         correct, incorrect, index = [], [], []
         for edge in range(20,100,10):
@@ -172,96 +185,135 @@ class BaseModel(object):
 
     def validate(self):
         """ Training, Validation, Cross-Validation """
-        self.logger.info(f"{self.model_description} validation")
+        
+        self.logger.info(f"{self.model_description} validation. It will take a while")
+        self.logger.info(f"The cross-validation is turned off in this version")
+
+#         # Cross-Validation goes on full training dataset
+#         t0 = time()
+#         val_cv_score = cross_val_score(self.clf, self.x_training_enc, self.y_training_enc, cv=3, scoring='balanced_accuracy')
+#         self.val_cv_score = np.array([round(item, 5) for item in val_cv_score])
+#         self.logger.info(f"Cross-validation average score: {self.val_cv_score.mean():.3f}")
+#         self.logger.debug(f"Cross-validation finished in {time() - t0:.3f} sec.")
+
+        # Training
         t0 = time()
-        # Cross-Validation goes on full training dataset
-        val_cv_score = cross_val_score(self.clf, self.X_training_enc, self.y_training_enc, cv=3, scoring='balanced_accuracy')
-        self.val_cv_score = np.array([round(item, 5) for item in val_cv_score])
-        self.logger.info(f"Cross-validation average score: {self.val_cv_score.mean():.3f}")
-        self.logger.debug(f"Cross-validation finished in {time() - t0:.3f} sec.")
-        t0 = time()
-        self.clf.fit(self.X_train_enc, self.y_train_enc)
+        self.clf.fit(self.x_train_enc, self.y_train_enc)
         self.logger.debug(f"Training finished in {time() - t0:.3f} sec.")
+        
+        # Prediction and estimation
         t0 = time()
-        y_pred = self.clf.predict(self.X_valid_enc)
-        self.val_score = balanced_accuracy_score(self.y_valid_enc, y_pred)
-        self.logger.info(f"Balanced accuracy score: {self.val_score:.3f}")
+        y_pred = self.clf.predict(self.x_valid_enc)
+        self.bal_val_score = balanced_accuracy_score(self.y_valid_enc, y_pred)
+        self.logger.info(f"Balanced accuracy score: {self.bal_val_score:.3f}")
+        self.val_score = accuracy_score(self.y_valid_enc, y_pred)
+        self.logger.info(f"Accuracy score: {self.val_score:.3f}")
         self.logger.debug(f"Validation finished in {time() - t0:.1f} sec.")
-        # print statistics
-        self.get_statistics(self.X_valid_enc, self.y_valid_enc)
+        
+        # print detailed statistics
+        self.get_statistics(self.x_valid_enc, self.y_valid_enc)
 
     def fit(self):
         """ Training on full data set """
-        self.logger.info(f"Final training {self.model_description}...")
+        self.logger.info(f"Final training {self.model_description}. It will take a while")
         # self.get_encoded()
         t0 = time()
-        self.clf.fit(self.X_training_enc, self.y_training_enc)
+        self.clf.fit(self.x_training_enc, self.y_training_enc)
         self.logger.debug(f"Final training finished in {time() - t0:.3f} sec.")
-        self.find_top_3(self.X_preds_enc)
+        self.find_top_3(self.x_preds_enc)
 
         return self.proba
 
-class ModelNonTop200(BaseModel):
+    
+class Model_Boost(BaseModel):
 
     def __init__(self, df, samples_threshold):
-        """ Class initialization, logging set-up, checking input files """
+        """
+            Initialization of the model.
+            This model does not use hierarchy fields and process all outlets.
+        
+        """
         super().__init__()
-        self.model_description = 'Model Non Top 200'
+        self.model_description = 'XGBoost Classifier Model for all outlets'
         self.logger.debug(f"{self.model_description} is initializing")
-        # This model process all non top 200 outlets
-        self.X_y = df.loc[df['Trade_Structure']!='TOP200',:].copy()
-        self.logger.debug(f"X_y shape {self.X_y.shape}")
-        # Unbalanced dataset. Use class_weight='balanced'
-        self.clf = RandomForestClassifier(class_weight='balanced', n_estimators=40,
-            random_state=42, n_jobs=None, warm_start=False)
-        # List of all features
+
+        # XGBoost
+        self.clf = xgboost.XGBClassifier(n_estimators = XGB_PARAMS['n_estimators'], 
+                                         objective = 'multi:softprob', 
+                                         max_depth = XGB_PARAMS['max_depth'],
+                                         subsample = XGB_PARAMS['subsample'],
+                                         min_child_weight = XGB_PARAMS['min_child_weight'],
+                                         gamma = XGB_PARAMS['gamma'],
+                                         colsample_bytree = XGB_PARAMS['colsample_bytree'],
+                                         learning_rate = XGB_PARAMS['learning_rate'],
+                                         reg_alpha = XGB_PARAMS['reg_alpha'],
+                                         reg_lambda = XGB_PARAMS['reg_lambda'],  
+                                         n_jobs = 8,
+                                         seed = 1234,
+                                         silent=True)
+        
+        # Features
+        features = ['Chain_Type', 'Chain_Id', 'Chain_Chain_Tier_MWC', 'Chain_Chain_Sub_Tier_MWC',
+                    'Channel_Name_2018', 'Outlet_Type_2018', 'Trade_Structure', 'From_Dc',
+                    'Segment_MWC_Segment_Name', 'Cluster_MWC', 'Ship_To_Visited', 'Kladr_level_1',
+                    'Latitude', 'Longitude']
+        # Target & Service fields
+        features = features + ['isTrain', 'Region_Last_Future_Ship_to', 'Last_Future_ship_to_Name',
+                               'Last_Future_ship_to']
+        self.x_y = df[features].copy()
+        self.logger.debug(f"x_y shape {self.x_y.shape}")
+        # List of features for the model
         self.features = \
-            [column for column in self.X_y.columns \
+            [column for column in self.x_y.columns \
              if column not in [self.target] + self.target_aux + self.service]
-        self.logger.debug(f"features: {self.features}")
-        self.cat_features = self.X_y[self.features].select_dtypes(include=['object']).columns  # Categorical
-        self.num_features = self.X_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
+        self.logger.debug(f"Feature list: {self.features}")
+        self.cat_features = self.x_y[self.features].select_dtypes(include=['object']).columns  # Categorical
+        self.num_features = self.x_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
+        
         # Ship-to classes for excluding
-        self.ships_to_exclude = self.get_ships_to_exclude(self.X_y, samples_threshold)
+        self.ships_to_exclude = self.get_ships_to_exclude(self.x_y, samples_threshold)
         self.get_encoded()
 
     def get_encoded(self):
         """ Ordinal encoding implementation """
+        
         # Fill nan values
-        self.X_y = self.fill_nan(self.X_y)
+        self.x_y = self.fill_nan(self.x_y)
+        
         # Training encoders on full dataset (X & y separately)
-        X = self.X_y[self.features]
+        X = self.x_y[self.features]
         self.ordinal_encoder_x.fit(X[self.cat_features])
-        y = self.X_y[self.X_y['isTrain']==True][self.target]
+        y = self.x_y[self.x_y['isTrain']==True][self.target]
         self.label_encoder_y.fit(y)
         
-        # full training dataset
-        training = self.X_y[self.X_y['isTrain']==True]
+        # Full training dataset
+        training = self.x_y[self.x_y['isTrain']==True]
         init_rows = training.shape[0]
         self.logger.debug(f"Rows in initial training dataset: {training.shape[0]}")
+        
         # Rows to remove from training
         training_excluded = training[training[self.target].isin(self.ships_to_exclude)]
         self.logger.debug(f"Rows that excluded from the training: {training_excluded.shape[0]}")
+        
         # Remove rows to remove from training
         training = training[~training[self.target].isin(self.ships_to_exclude)]
         self.logger.debug(f"Rows in training dataset: {training.shape[0]}")
         assert init_rows == training.shape[0] + training_excluded.shape[0]
         self.training = training
-
-        # full dataset for prediction
-        self.preds = self.X_y[self.X_y['isTrain']==False]
+        
+        # Full dataset for prediction
+        self.preds = self.x_y[self.x_y['isTrain']==False]
         self.logger.debug(f"Rows in prediction dataset: {self.preds.shape[0]}")
+        self.is_nothing_to_predict()
         
-        # Training-Validation split
-        self.X_train, self.X_valid, self.y_train, self.y_valid = \
+        # Training-Validation split & encoding
+        self.x_train, self.x_valid, self.y_train, self.y_valid = \
                 train_test_split(self.training[self.features], self.training[self.target],
                     test_size=0.3, random_state=42, stratify=self.training[self.target])
-        
-        self.X_training_enc = self.X_transform(training)
-        self.X_preds_enc = self.X_transform(self.preds)
-        self.X_train_enc = self.X_transform(self.X_train)
-        self.X_valid_enc = self.X_transform(self.X_valid)
-        
+        self.x_training_enc = self.x_transform(training)
+        self.x_preds_enc = self.x_transform(self.preds)
+        self.x_train_enc = self.x_transform(self.x_train)
+        self.x_valid_enc = self.x_transform(self.x_valid)       
         # Transform self.target variable
         y = training[self.target]
         # y is a DataFrame, converting to 1D array
@@ -269,111 +321,23 @@ class ModelNonTop200(BaseModel):
         self.y_train_enc = self.label_encoder_y.transform(self.y_train.values.ravel())
         self.y_valid_enc = self.label_encoder_y.transform(self.y_valid.values.ravel())
 
-class ModelTop200(BaseModel):
-
-    def __init__(self, df, samples_threshold, pred_blank_top200):
-        """ Class initialization, logging set-up, checking input files """
-        super().__init__()
-        self.model_description = 'Model Top 200'
-        self.logger.debug(f"{self.model_description} is initializing")
-        # This model process only top 200 outlets using reduced set of features
-        self.X_y = df.loc[df['Trade_Structure']=='TOP200',['Chain_Id','Kladr_level_1','Ship_To_Visited',
-            'isTrain','Region_Last_Future_Ship_to','Last_Future_ship_to_Name','Last_Future_ship_to']].copy()
-        # The trainig dataset includes rows:
-        # 1. with all NaN target (to prediction)
-        # 2. or only target that equal to Ship_To_Visited (for training)
-        # (i.e. to exclude rows where target is not equal to Ship_To_Visited)
-        self.X_y = self.X_y[(self.X_y[self.target].isna()) | \
-                            ((~self.X_y[self.target].isna()) & \
-                            (self.X_y['Ship_To_Visited']==self.X_y[self.target]))]
-        self.X_y_excluded = self.X_y[(~self.X_y[self.target].isna()) & \
-                                    (self.X_y['Ship_To_Visited']!=self.X_y[self.target])]
-        self.logger.debug(f"X_y shape {self.X_y.shape}")
-        self.logger.debug(f"X_y_excluded shape {self.X_y_excluded.shape}")
-        # Unbalanced dataset. Use class_weight='balanced'
-        self.clf = DecisionTreeClassifier(class_weight='balanced', random_state=42)        
-        # List of features
-        self.features = \
-            [column for column in self.X_y.columns \
-             if column not in [self.target] + self.target_aux + self.service]
-        self.logger.debug(f"features: {self.features}")
-        self.cat_features = self.X_y[self.features].select_dtypes(include=['object']).columns  # Categorical
-        self.num_features = self.X_y[self.features].select_dtypes(exclude=['object']).columns  # Numeric
-        # Ship-to classes for excluding
-        self.ships_to_exclude = self.get_ships_to_exclude(self.X_y, samples_threshold)
-        # 1 - perform prediction (0 - otherwise) for outlets with blank Ship-To (Visited) fields
-        self.pred_blank_top200 = pred_blank_top200
-        self.get_encoded()
-
-    def get_encoded(self):
-        """ Ordinal encoding implementation """
-        # Fill nan values
-        self.X_y = self.fill_nan(self.X_y)
-        # Training encoders on full dataset (X & y separately)
-        X = self.X_y[self.features]
-        self.ordinal_encoder_x.fit(X[self.cat_features])
-        y = self.X_y[self.X_y['isTrain']==True][self.target]
-        self.label_encoder_y.fit(y)
         
-        # full training dataset
-        training = self.X_y[self.X_y['isTrain']==True]
-        init_rows = training.shape[0]
-        self.logger.debug(f"Rows in initial training dataset: {training.shape[0]}")
-        # Rows to remove from training
-        training_excluded = training[training[self.target].isin(self.ships_to_exclude)]
-        self.logger.debug(f"Rows that excluded from the training: {training_excluded.shape[0]}")
-        # Remove rows to remove from training
-        training = training[~training[self.target].isin(self.ships_to_exclude)]
-        self.logger.debug(f"Rows in training dataset: {training.shape[0]}")
-        assert init_rows == training.shape[0] + training_excluded.shape[0]
-        self.training = training
-
-        # full dataset for prediction
-        preds = self.X_y[self.X_y['isTrain']==False]
-        if not self.pred_blank_top200:
-            # 0 - do not perform prediction for outlets with blank Ship-To (Visited) fields
-            init_rows = preds.shape[0]
-            self.logger.debug(f"Rows in initial prediction dataset: {init_rows}")
-            # Rows to remove from prediction (where Ship_To_visited is missed)
-            preds_excluded = preds[preds['Ship_To_Visited']=='missing']
-            self.logger.debug(f"Rows that excluded from the prediction: {preds_excluded.shape[0]}")
-            # Remove rows from prediction
-            preds = preds[preds['Ship_To_Visited']!='missing']        
-            self.logger.debug(f"Rows in prediction dataset: {preds.shape[0]}")
-            assert init_rows == preds.shape[0] + preds_excluded.shape[0]
-        self.preds = preds
-
-        # Training-Validation split
-        self.X_train, self.X_valid, self.y_train, self.y_valid = \
-                train_test_split(self.training[self.features], self.training[self.target],
-                    test_size=0.3, random_state=42, stratify=self.training[self.target])
-            
-        self.X_training_enc = self.X_transform(training)
-        self.X_preds_enc = self.X_transform(self.preds)
-        self.X_train_enc = self.X_transform(self.X_train)
-        self.X_valid_enc = self.X_transform(self.X_valid)
-        
-        # Transform self.target variable
-        y = training[self.target]
-        # y is a DataFrame, converting to 1D array
-        self.y_training_enc = self.label_encoder_y.transform(y.values.ravel())
-        self.y_train_enc = self.label_encoder_y.transform(self.y_train.values.ravel())
-        self.y_valid_enc = self.label_encoder_y.transform(self.y_valid.values.ravel())
-
 class TerritoryFinder(object):
     
-    def __init__(self, coord_file, report_file, output_file, samples_threshold=2, pred_blank_top200=1):
-        """ Class initialization, logging set-up, checking input files """
+    def __init__(self, coord_file, report_file, output_file, samples_threshold=21):
+        """
+        Class initialization, logging set-up, checking input files
+        
+        """
         self.logger = logging.getLogger('territory_finder_application.' + __name__)
+
         # input and output files
         self.coord_file, self.report_file, self.output_file = coord_file, report_file, output_file
-        # self.df = pd.DataFrame()
-        # self.X_train_enc, self.y_enc_train, self.X_preds_enc = None, None, None
         self.check_files()
+        
         # The threshold for excluding class from prediction
         self.samples_threshold = samples_threshold
-        # 1 - perform prediction (0 - otherwise) for outlets with blank Ship-To (Visited) fields
-        self.pred_blank_top200 = pred_blank_top200
+        
         # Traget variable, auxulary targets and service fields
         self.target = 'Last_Future_ship_to'  
         self.target_aux = ['Region_Last_Future_Ship_to','Last_Future_ship_to_Name']
@@ -381,7 +345,10 @@ class TerritoryFinder(object):
         self.logger.debug("TerritoryFinder initialized")
     
     def check_files(self):
-        """ Check if input files exist and output file is closed """
+        """
+        Check if input files exist and output file is closed
+        
+        """
         try:
             # Check if input files exist
             text = ""
@@ -403,22 +370,6 @@ class TerritoryFinder(object):
             self.logger.exception(f"File '{self.output_file}' is opened. Please close the file or use another name")
             sys.exit(1)
         self.logger.debug(f"Input files were found")
-
-    def create_sample_files(self):
-        """ Creates sample input files for developing purposes """
-        # Remove dupes and non-active outlets, then save a fraction of data in 10%
-        df_terr = pd.read_excel(self.report_file, skiprows=1)
-        df_terr = df_terr[df_terr['Основная / Дубликат']!='Дубликат']
-        df_terr = df_terr[df_terr['Store Status NOW']!='Неактивная']
-        df_terr_sample = df_terr.sample(frac=0.1, random_state=42)
-        df_terr_sample.shape
-        with pd.ExcelWriter('Report Territory Management_sample.xlsx') as writer: # pylint: disable=abstract-class-instantiated
-            df_terr_sample.to_excel(writer, sheet_name='Sheet1', index=False)
-        # Leave only used outlets in coord file 
-        df_coor = pd.read_excel(self.coord_file)
-        df_coor_sample = df_coor[df_coor['OL_ID'].isin(df_terr_sample['SWE Store Key'])]
-        with pd.ExcelWriter('Coordinates_sample.xlsx') as writer: # pylint: disable=abstract-class-instantiated
-            df_coor_sample.to_excel(writer, sheet_name='Sheet1', index=False)
         
     def get_avg_coordinate(self, row, kladr_grouped):
         """
@@ -515,43 +466,54 @@ class TerritoryFinder(object):
                 aligned = np.array(aligned.split(',')).astype('float').astype('int')
                 aligned = ','.join(aligned.astype(str))
         except Exception as err:
-            self.logger.warning(f"Cannot format the Last_Future_ship_to value {value}. Error {err}")
+            self.logger.warning(f"Cannot format the Last_Future_ship_to value '{value}'. Error {err}")
             return value
         else:
             return aligned
 
     def load_report(self):
-        """ Load and pre-process report """
+        """
+        Load and pre-process report
+        
+        """
         self.logger.info(f"Loading report file...")
         df = pd.read_excel(self.report_file, skiprows=1)
         self.logger.debug(f"Rows in {self.report_file}: {df.shape[0]}")
+        
         # rename fields
         df.columns = REPORT_FILE_ALL_COLUMNS
+        
         # Save a full list of outlet codes to use when formatting a new report
         self.df_codes = pd.DataFrame(data=df['SWE_Store_Key'],columns=['SWE_Store_Key'])
+        
         # Remove outlet-duplicates and associated fields
         number_before = df.shape[0]
         df = df[df['General_Duplicate']!='Дубликат']
         df.drop(['Covering_Outlet_id','General_Duplicate'], axis=1, inplace=True)
         self.logger.debug(f"Removed duped outlets: {number_before - df.shape[0]}")
+        
         # Remove inactive outlets
         number_before = df.shape[0]
         df = df[df['Store_Status_NOW']!='Неактивная']
         self.logger.debug(f"Removed inactive outlets: {number_before - df.shape[0]}")
+        
         # Remove unused columns
         df = df[REPORT_FILE_COLUMNS]
-        # Remove with NaN SWE key
+        
+        # Remove outlets with empty SWE key
         number_before = df.shape[0]
         df = df[~df['SWE_Store_Key'].isna()]
         if number_before - df.shape[0] > 0:
             self.logger.warning(f"Removed with NaN SWE key: {number_before - df.shape[0]}")
-        # Mark outlet for training
+        
+        # Mark outlet for training and prediction
         df['isTrain'] = ~ df[self.target].isna()
-        # Align columns with classes
-        df.loc[df['isTrain']==True,self.target] = \
+        
+        # Format values in target and Ship_To_Visited columns
+        df.loc[df['isTrain']==True, self.target] = \
             df.loc[df['isTrain']==True][self.target].apply(self.align_value)
-        # df.loc[~df['Ship_To_Visited'].isna(),'Ship_To_Visited'] = \
-        #     df.loc[~df['Ship_To_Visited'].isna()]['Ship_To_Visited'].apply(self.align_value)
+        df.loc[~df['Ship_To_Visited'].isna(),'Ship_To_Visited'] = \
+            df.loc[~df['Ship_To_Visited'].isna()]['Ship_To_Visited'].apply(self.align_value)
         df['From_Dc'] = df['From_Dc'].astype(int)
         df['Chain_Id'] = df['Chain_Id'].astype(float).astype(int)
         return df
@@ -569,36 +531,39 @@ class TerritoryFinder(object):
         # Set SWE_Store_Key as index thereby exclude it from features
         self.df.set_index('SWE_Store_Key',inplace=True)
         # Initiate models
-        self.model1 = ModelNonTop200(self.df, self.samples_threshold)
-        self.model2 = ModelTop200(self.df, self.samples_threshold, self.pred_blank_top200)
+        self.model1 = Model_Boost(self.df, self.samples_threshold)
 
     def validate(self):
         self.model1.validate()
-        self.model2.validate()
 
     def get_report(self):
-        """ Prepare a new report """
+        """ Prepare the new report """
         self.logger.info("Calculate proba...")
         t0 = time()
-        # Generate proba datasets for both models
-        proba1 = self.model1.fit()
-        proba2 = self.model2.fit()
-        # Join proba1 with outlet codes
-        X_pred1 = self.model1.get_x_preds()
-        X_pred1.reset_index(inplace=True)
-        df1 = pd.concat([X_pred1['SWE_Store_Key'], proba1], axis=1,join='inner')
-        # Join proba2 with outlet codes
-        X_pred2 = self.model2.get_x_preds()
-        X_pred2.reset_index(inplace=True)
-        df2 = pd.concat([X_pred2['SWE_Store_Key'], proba2], axis=1,join='inner')
+        
+        # Generate proba dataset for model 1 and join it with outlet codes
+        proba1 = self.model1.fit()        
+        x_pred1 = self.model1.get_x_preds()
+        x_pred1.reset_index(inplace=True)
+        df1 = pd.concat([x_pred1['SWE_Store_Key'], proba1], axis=1,join='inner')
+        
+#         # Generate proba dataset for model 1 and join it with outlet codes
+#         proba2 = self.model2.fit()
+#         x_pred2 = self.model2.get_x_preds()
+#         x_pred2.reset_index(inplace=True)
+#         df2 = pd.concat([x_pred2['SWE_Store_Key'], proba2], axis=1,join='inner')
+        
         # Create one big proba with outlet codes
-        df = pd.concat([df1, df2])
-        # Prepare data that will be added to basic report
+#         df = pd.concat([df1, df2])
+        df = pd.concat([df1])
+        
+        # Prepare data that will be added to the initial report
         df_info = self.df_codes.merge(right=df, how='left', on='SWE_Store_Key')
         df_info['SWE_Store_Key'] = df_info['SWE_Store_Key'].astype('str')
         self.logger.debug(f"Done in {time() - t0:.3f} sec.")
         
-        target_aux_values = self.df[self.df['isTrain']==True][['Region_Last_Future_Ship_to','Last_Future_ship_to_Name',self.target]] \
+        target_aux_values = \
+            self.df[self.df['isTrain']==True][['Region_Last_Future_Ship_to','Last_Future_ship_to_Name',self.target]] \
             .groupby(self.target)['Region_Last_Future_Ship_to','Last_Future_ship_to_Name'].first()
 
         self.logger.info("Open report...")
